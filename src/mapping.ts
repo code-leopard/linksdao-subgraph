@@ -1,91 +1,99 @@
-import { BigInt } from "@graphprotocol/graph-ts"
+import { ipfs, json, JSONValue } from "@graphprotocol/graph-ts";
 import {
-  Contract,
-  Approval,
-  ApprovalForAll,
-  OwnershipTransferred,
-  Transfer
-} from "../generated/Contract/Contract"
-import { ExampleEntity } from "../generated/schema"
+  Contract as TokenContract,
+  Transfer as TransferEvent
+} from "../generated/Contract/Contract";
 
-export function handleApproval(event: Approval): void {
-  // Entities can be loaded from the store using a string ID; this ID
-  // needs to be unique across all entities of the same type
-  let entity = ExampleEntity.load(event.transaction.from.toHex())
+import {
+  Token, User
+} from '../generated/schema';
 
-  // Entities only exist after they have been saved to the store;
-  // `null` checks allow to create entities on demand
-  if (!entity) {
-    entity = new ExampleEntity(event.transaction.from.toHex())
+export function handleTransfer(event: TransferEvent): void {
+  let baseHash = "QmdVmsBeGCiZU7UpszYP4mnL7q2pV6MozCwBZzr7kPy2AU";
+  let fullIPFSURI = "ipfs.io/ipfs/" + baseHash + "/";
+  var token = Token.load(event.params.tokenId.toString());
+  if (!token) {
+    token = new Token(event.params.tokenId.toString());
+    token.creator = event.params.to.toHexString();
+    token.tokenID = event.params.tokenId;
+    token.createdAtTimestamp = event.block.timestamp;
+  }
+  token.updatedAtTimestamp = event.block.timestamp;
+  let tokenContract = TokenContract.bind(event.address);
 
-    // Entity fields can be set using simple assignments
-    entity.count = BigInt.fromI32(0)
+  let baseURI = tokenContract.baseTokenURI();
+  let contentURI = tokenContract.tokenURI(event.params.tokenId);
+
+  if (baseURI.includes('https')) {
+    baseURI = fullIPFSURI;
+  } else if (baseURI.includes('ipfs')) {
+    let hash = baseURI.split('ipfs://').join('');
+    baseURI = "ipfs.io/ipfs" + hash;
   }
 
-  // BigInt and BigDecimal math are supported
-  entity.count = entity.count + BigInt.fromI32(1)
+  if (contentURI.includes('https')) {
+    contentURI = fullIPFSURI + event.params.tokenId.toString();
+  } else {
+    let hash = contentURI.split('ipfs://').join('');
+    contentURI = "ipfs.io/ipfs/" + hash + event.params.tokenId.toString();
+  }
 
-  // Entity fields can be set based on event parameters
-  entity.owner = event.params.owner
-  entity.approved = event.params.approved
+  token.contentURI = contentURI;
+  token.baseURI = baseURI;
 
-  // Entities can be written to the store with `.save()`
-  entity.save()
+  if (contentURI != "") {
+    let hash = contentURI.split('ipfs.io/ipfs/').join('');
+    let data = ipfs.cat(hash);
 
-  // Note: If a handler doesn't require existing field values, it is faster
-  // _not_ to load the entity from the store. Instead, create it fresh with
-  // `new Entity(...)`, set the fields that should be updated and save the
-  // entity back to the store. Fields that were not set or unset remain
-  // unchanged, allowing for partial updates to be applied.
+    if (!data) return;
+    let value = json.fromBytes(data).toObject();
+    if (data) {
+      var image = value.get('image');
+      if (image) {
+        let h = image.toString();
+        let imageHash = h.split('ipfs://').join('');
+        token.imageURI = 'ipfs.io/ipfs/' + imageHash;
+      }
 
-  // It is also possible to access smart contracts from mappings. For
-  // example, the contract that has emitted the event can be connected to
-  // with:
-  //
-  // let contract = Contract.bind(event.address)
-  //
-  // The following functions can then be called on this contract to access
-  // state variables and other data:
-  //
-  // - contract.DOMAIN_SEPARATOR(...)
-  // - contract.MAX_MULTIMINT(...)
-  // - contract.MAX_PREMIUM_PER_WALLET(...)
-  // - contract.MAX_PREMIUM_RESERVED_SUPPLY(...)
-  // - contract.MAX_PREMIUM_SUPPLY(...)
-  // - contract.MAX_PREMIUM_WHITELIST_SUPPLY(...)
-  // - contract.MAX_STANDARD_PER_WALLET(...)
-  // - contract.MAX_STANDARD_RESERVED_SUPPLY(...)
-  // - contract.MAX_STANDARD_SUPPLY(...)
-  // - contract.MAX_STANDARD_WHITELIST_SUPPLY(...)
-  // - contract.MAX_SUPPLY(...)
-  // - contract.MINTER_TYPEHASH(...)
-  // - contract.PREMIUM_PRICE(...)
-  // - contract.STANDARD_PRICE(...)
-  // - contract.allowedPremiumMintCount(...)
-  // - contract.allowedStandardMintCount(...)
-  // - contract.balanceOf(...)
-  // - contract.baseTokenURI(...)
-  // - contract.checkWhitelist(...)
-  // - contract.getApproved(...)
-  // - contract.isApprovedForAll(...)
-  // - contract.name(...)
-  // - contract.owner(...)
-  // - contract.ownerOf(...)
-  // - contract.saleIsActive(...)
-  // - contract.supportsInterface(...)
-  // - contract.symbol(...)
-  // - contract.tokenURI(...)
-  // - contract.totalPremiumReservedSupply(...)
-  // - contract.totalPremiumSupply(...)
-  // - contract.totalPremiumWhitelistMints(...)
-  // - contract.totalStandardReservedSupply(...)
-  // - contract.totalStandardSupply(...)
-  // - contract.totalStandardWhitelistMints(...)
-  // - contract.whitelistSaleIsActive(...)
+      let attributes: JSONValue[] = [];
+      let atts = value.get('attributes');
+      if (atts) {
+        attributes = atts.toArray();
+      }
+
+      for (let i = 0; i < attributes.length; i++) {
+        let item = attributes[i].toObject();
+        let trait: string = "";
+        let t = item.get('trait_type');
+        if (t) {
+          trait = t.toString();
+        }
+        let value: string = "";
+        let v = item.get('value');
+        if (v) {
+          value = v.toString();
+        }
+        if (trait == "Generation") {
+          token.generation = value;
+        }
+
+        if (trait == "Membership") {
+          token.membership = value;
+        }
+
+        if (trait == "Member Number") {
+          token.memberNumber = value;
+        }
+      }
+    }
+  }
+
+  token.owner = event.params.to.toHexString();
+  token.save();
+
+  let user = User.load(event.params.to.toHexString());
+  if (!user) {
+    user = new User(event.params.to.toHexString());
+    user.save();
+  }
 }
-
-export function handleApprovalForAll(event: ApprovalForAll): void {}
-
-export function handleOwnershipTransferred(event: OwnershipTransferred): void {}
-
-export function handleTransfer(event: Transfer): void {}
